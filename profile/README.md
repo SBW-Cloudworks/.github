@@ -2,86 +2,225 @@
 
 ## Technical Architecture Diagram
 ![ClickStreamDiagramV8](ClickStreamDiagramV8.png)
-### 1. Network Infrastructure
+# Clickstream Analytics Platform – Batch Processing Architecture
 
-The environment is deployed inside an Amazon Virtual Private Cloud (VPC) consisting of:
+## 🌐 Overview
 
-* **Public Layer**
+This project implements a **Clickstream Analytics System** using AWS services with a **Batch Processing Architecture**. It handles data collection, raw storage, periodic ETL processing, and analytics visualization using a self-managed PostgreSQL + R Shiny Server running on EC2.
 
-  * AWS Amplify Hosting for the e-commerce frontend, integrated with Amazon CloudFront as the global CDN.
-
-  * API Gateway for handling ingest traffic from the frontend.
-
-* **Private Subnet 1 – OLTP Layer**
-
-  * EC2 instance hosting the operational transactional database for the e-commerce website.
-
-* **Private Subnet 2 – Analytics Layer**
-
-  * EC2 instance hosting the Data Warehouse.
-
-  * EC2 instance hosting the R Shiny Server for dashboard visualizations.
-
-* **VPC Gateway Endpoint for Amazon S3**, ensuring private connectivity from Lambda and EC2 to S3 without requiring a NAT Gateway.
+The system emphasizes **low cost**, **scalability**, **security**, and **full control of the data warehouse layer**.
 
 ---
 
-### 2. Data and Process Flow
+## 📌 1. Architecture Components
 
-The system processes clickstream data through the following workflow:
+The system is built using the following AWS services:
 
-1. **User Interaction**  
-    Users access the website through **Amplify \+ CloudFront**, which delivers static web assets with low latency.
-
-2. **Event Collection**  
-    A JavaScript SDK embedded in the frontend sends user interaction events (clicks, views, searches) to **Amazon API Gateway**.
-
-3. **Ingestion Layer**  
-    API Gateway invokes an **AWS Lambda** function that validates and stores raw clickstream data into **Amazon S3 (Raw Layer)**.
-
-4. **Batch Processing (ETL)**
-
-   * **Amazon EventBridge** triggers the ETL Lambda function every 60 minutes.
-
-   * The Lambda function reads raw logs from S3, performs cleaning, transformation, and normalization.
-
-   * Processed data is written to **S3 Processed Layer** and loaded into the **EC2 Data Warehouse**.
-
-5. **Analytics & Visualization**  
-    An **R Shiny Server** on EC2 queries the Data Warehouse to provide dashboards displaying product popularity, customer behavior, sales funnels, and traffic trends.
+* **Frontend Hosting:** AWS Amplify Hosting (CloudFront integrated)
+* **Authentication:** Amazon Cognito (User Pool)
+* **API Layer:** Amazon API Gateway (HTTP API)
+* **Data Ingestion:** AWS Lambda (Clickstream ingest)
+* **Raw Data Lake:** Amazon S3 (Raw Layer)
+* **Batch Scheduler:** Amazon EventBridge (Cron Job)
+* **ETL Processor:** AWS Lambda ETL
+* **Private Connectivity:** VPC Endpoint Interface
+* **Internal Routing:** Internal ALB
+* **Data Warehouse & Analytics:** EC2 running PostgreSQL + R Shiny Server
+* **Visualization:** Shiny Dashboard
 
 ---
 
-### 3. Software Services and Components
+## 🔄 2. Detailed Data Flow
 
-The architecture includes the following AWS services:
+Below is the complete data flow of the system:
 
-* **Frontend & Delivery**: AWS Amplify, Amazon CloudFront
+### **(1) User → Amplify Hosting**
 
-* **Data Ingestion**: Amazon API Gateway, AWS Lambda
+Users access the website hosted on **Amplify Hosting**. Amplify includes CloudFront + S3 internally.
 
-* **Storage**: Amazon S3 (Media Assets, Raw Data, Processed Data)
+### **(2) Amplify → Cognito Authentication**
 
-* **ETL & Scheduling**: AWS Lambda, Amazon EventBridge
+Frontend calls Cognito for:
 
-* **Compute (Analytics)**: Amazon EC2 (Data Warehouse, R Shiny Server)
+* Login / Registration
+* Receiving JWT tokens (ID, Access, Refresh)
 
-* **Security & Access Control**: Amazon Cognito, AWS Identity and Access Management (IAM)
+Tokens are stored on the client for authenticated requests.
 
-* **Monitoring & Logging**: Amazon CloudWatch, Amazon SNS
+### **(3) Frontend → API Gateway**
 
-* **Networking**: VPC, Subnets, S3 VPC Endpoint, Security Groups
+Frontend calls the API Gateway endpoint, sending JWT tokens. API Gateway verifies tokens using Cognito Authorizer.
+
+### **(4) API Gateway → Lambda Ingest**
+
+Lambda Ingest receives clickstream events:
+
+* Normalizes JSON
+* Adds metadata
+* Generates session identifiers
+* Prepares data for Raw Layer
+
+### **(5) Lambda Ingest → S3 Raw Layer**
+
+Lambda stores data into partitioned S3 structure:
+
+```
+s3://clickstream/raw/YYYY/MM/DD/HH/*.json
+```
+
+This forms the Raw Data Lake.
+
+### **(6) EventBridge → Trigger Lambda ETL**
+
+EventBridge triggers the ETL Lambda on a schedule (e.g., hourly batch).
+
+### **(7) Lambda ETL → Read Raw Data**
+
+ETL Lambda:
+
+* Reads JSON from S3 Raw Layer
+* Validates and aggregates events
+* Converts JSON → SQL rows
+* Normalizes schema fields
+
+### **(8) Lambda ETL → VPC Endpoint Interface**
+
+Lambda does **not** run inside VPC, but needs access to EC2 → therefore uses **VPC Endpoint Interface**.
+
+Traffic flows:
+
+```
+Lambda → VPC Endpoint → Internal ALB → EC2
+```
+
+### **(9) Internal ALB → Forward to EC2**
+
+Internal ALB ensures private-only routing and forwards processed data to EC2.
+
+### **(10) EC2 (PostgreSQL + Shiny)**
+
+EC2 serves dual roles:
+
+* **PostgreSQL Database (self-managed)**
+* **R Shiny Server for analytics visualization**
+
+Data is inserted into PostgreSQL for querying and dashboard rendering.
+
+### **(11) Admin → View Shiny Dashboard**
+
+Admins access the dashboard hosted on EC2 to view processed analytics such as:
+
+* User behavior patterns
+* Page performance metrics
+* Conversion funnels
+* Traffic sources
+* Session duration
+* Retention insights
 
 ---
 
-### 4. Integration and Security Controls
+## 🗂 3. Architecture Summary Diagram
 
-* **Authentication & Authorization**: Amazon Cognito manages secure user sign-in and token-based access to APIs.
+High-level system flow:
 
-* **Least-privilege IAM Policies** are enforced for Lambda, API Gateway, EC2, and S3 access.
+```
+User
+→ Amplify Hosting
+→ Cognito
+→ API Gateway
+→ Lambda Ingest
+→ S3 Raw Layer
+→ EventBridge Cron
+→ Lambda ETL
+→ VPC Endpoint Interface
+→ Internal ALB
+→ EC2 (PostgreSQL + Shiny)
+→ Admin Dashboard
+```
 
-* **Operational Metrics & Alerts** are configured in Amazon CloudWatch and forwarded to Amazon SNS.
+---
 
-* **Private subnets** ensure no direct public access to the Data Warehouse or Shiny workloads.
+## 🏗 4. Design Justification
 
-* **S3 VPC Endpoint** ensures internal-only communication without exposing resources to the internet.
+### ✔ Amplify Hosting
+
+* Automatic CI/CD
+* CloudFront + S3 integrated
+* No server maintenance
+
+### ✔ Cognito Authentication
+
+* Secure JWT workflow
+* Easy integration with API Gateway
+
+### ✔ Serverless Ingestion (API Gateway + Lambda)
+
+* Low cost
+* Automatically scalable
+
+### ✔ S3 Raw Layer
+
+* Durable, cheap, ideal for Data Lake
+
+### ✔ EventBridge Batch Scheduling
+
+* Flexible cron
+* Ideal for periodic ETL processing
+
+### ✔ Lambda ETL
+
+* Stateless, scalable ETL jobs
+* Converts NoSQL → SQL
+
+### ✔ VPC Endpoint + Internal ALB
+
+* Ensures secure private network communication
+* No exposure of EC2 to the internet
+
+### ✔ EC2 PostgreSQL + Shiny
+
+* Full control of Data Warehouse
+* Ideal for data analytics dashboards
+
+---
+
+## 💾 5. Project Folder Structure (Recommended)
+
+```
+📦 Clickstream-Analytics
+ ┣ 📂 infrastructure
+ ┃ ┗ 📜 terraform
+ ┣ 📂 frontend
+ ┃ ┗ 📜 React/NextJS source
+ ┣ 📂 lambda
+ ┃ ┣ 📜 ingest.py
+ ┃ ┗ 📜 etl.py
+ ┣ 📂 scripts
+ ┃ ┗ 📜 ec2-setup.sh
+ ┣ 📂 shiny
+ ┃ ┗ 📜 app.R
+ ┗ 📜 README.md
+```
+
+---
+
+## 🚀 6. Deployment Workflow
+
+1. Deploy Amplify Hosting
+2. Configure Cognito User Pool
+3. Create API Gateway HTTP API
+4. Deploy Lambda Ingest and ETL
+5. Create S3 Raw Layer bucket
+6. Set up EventBridge cron
+7. Create VPC Endpoint + Internal ALB
+8. Launch EC2 and install PostgreSQL + Shiny
+9. Configure ALB → EC2 routing
+10. Test ingestion → ETL → database workflow
+11. Access the Shiny dashboard
+
+---
+
+## ⭐ Author
+
+Clickstream Analytics System
+Developed by **Trieu Quoc Hao (SBW Team)**
