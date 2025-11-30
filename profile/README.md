@@ -2,225 +2,163 @@
 
 ## Technical Architecture Diagram
 ![ClickStreamDiagramV8](ClickStreamDiagramV8.png)
-# Clickstream Analytics Platform – Batch Processing Architecture
+# 📊 Clickstream Analytics Platform for E-Commerce  
+Batch-based ETL • AWS Serverless • Data Warehouse • R Shiny Analytics
 
-## 🌐 Overview
+## 🏆 Overview
+This project implements a **Batch Clickstream Analytics Platform** for an e-commerce website
+selling computer products.  
+The system collects user behavior events, stores raw JSON in S3, processes data using
+scheduled ETL (AWS Lambda), and loads analytical data into a **self-managed PostgreSQL Data Warehouse** hosted on EC2.
 
-This project implements a **Clickstream Analytics System** using AWS services with a **Batch Processing Architecture**. It handles data collection, raw storage, periodic ETL processing, and analytics visualization using a self-managed PostgreSQL + R Shiny Server running on EC2.
+Analytics dashboards are built using **R Shiny**, running on the same EC2 instance as the Data Warehouse.
 
-The system emphasizes **low cost**, **scalability**, **security**, and **full control of the data warehouse layer**.
-
----
-
-## 📌 1. Architecture Components
-
-The system is built using the following AWS services:
-
-* **Frontend Hosting:** AWS Amplify Hosting (CloudFront integrated)
-* **Authentication:** Amazon Cognito (User Pool)
-* **API Layer:** Amazon API Gateway (HTTP API)
-* **Data Ingestion:** AWS Lambda (Clickstream ingest)
-* **Raw Data Lake:** Amazon S3 (Raw Layer)
-* **Batch Scheduler:** Amazon EventBridge (Cron Job)
-* **ETL Processor:** AWS Lambda ETL
-* **Private Connectivity:** VPC Endpoint Interface
-* **Internal Routing:** Internal ALB
-* **Data Warehouse & Analytics:** EC2 running PostgreSQL + R Shiny Server
-* **Visualization:** Shiny Dashboard
+The platform is designed with:
+- High data security (private subnets, no public DB access)
+- Clear separation between OLTP vs Analytics workloads
+- Scalable and low-cost AWS serverless components
 
 ---
 
-## 🔄 2. Detailed Data Flow
+# 🏗️ Architecture Summary
 
-Below is the complete data flow of the system:
-
-### **(1) User → Amplify Hosting**
-
-Users access the website hosted on **Amplify Hosting**. Amplify includes CloudFront + S3 internally.
-
-### **(2) Amplify → Cognito Authentication**
-
-Frontend calls Cognito for:
-
-* Login / Registration
-* Receiving JWT tokens (ID, Access, Refresh)
-
-Tokens are stored on the client for authenticated requests.
-
-### **(3) Frontend → API Gateway**
-
-Frontend calls the API Gateway endpoint, sending JWT tokens. API Gateway verifies tokens using Cognito Authorizer.
-
-### **(4) API Gateway → Lambda Ingest**
-
-Lambda Ingest receives clickstream events:
-
-* Normalizes JSON
-* Adds metadata
-* Generates session identifiers
-* Prepares data for Raw Layer
-
-### **(5) Lambda Ingest → S3 Raw Layer**
-
-Lambda stores data into partitioned S3 structure:
-
-```
-s3://clickstream/raw/YYYY/MM/DD/HH/*.json
-```
-
-This forms the Raw Data Lake.
-
-### **(6) EventBridge → Trigger Lambda ETL**
-
-EventBridge triggers the ETL Lambda on a schedule (e.g., hourly batch).
-
-### **(7) Lambda ETL → Read Raw Data**
-
-ETL Lambda:
-
-* Reads JSON from S3 Raw Layer
-* Validates and aggregates events
-* Converts JSON → SQL rows
-* Normalizes schema fields
-
-### **(8) Lambda ETL → VPC Endpoint Interface**
-
-Lambda does **not** run inside VPC, but needs access to EC2 → therefore uses **VPC Endpoint Interface**.
-
-Traffic flows:
-
-```
-Lambda → VPC Endpoint → Internal ALB → EC2
-```
-
-### **(9) Internal ALB → Forward to EC2**
-
-Internal ALB ensures private-only routing and forwards processed data to EC2.
-
-### **(10) EC2 (PostgreSQL + Shiny)**
-
-EC2 serves dual roles:
-
-* **PostgreSQL Database (self-managed)**
-* **R Shiny Server for analytics visualization**
-
-Data is inserted into PostgreSQL for querying and dashboard rendering.
-
-### **(11) Admin → View Shiny Dashboard**
-
-Admins access the dashboard hosted on EC2 to view processed analytics such as:
-
-* User behavior patterns
-* Page performance metrics
-* Conversion funnels
-* Traffic sources
-* Session duration
-* Retention insights
+### **1. User-Facing Domain**
+- Frontend built using **React/Next.js**
+- Hosted on **AWS Amplify Hosting**
+- Amplify internally uses:
+  - Amazon CloudFront (CDN)
+  - Amazon S3 (assets bucket)
+- Authentication via **Amazon Cognito User Pool**
 
 ---
 
-## 🗂 3. Architecture Summary Diagram
-
-High-level system flow:
-
-```
-User
-→ Amplify Hosting
-→ Cognito
-→ API Gateway
-→ Lambda Ingest
-→ S3 Raw Layer
-→ EventBridge Cron
-→ Lambda ETL
-→ VPC Endpoint Interface
-→ Internal ALB
-→ EC2 (PostgreSQL + Shiny)
-→ Admin Dashboard
-```
+### **2. Ingestion & Data Lake Domain**
+- Frontend sends clickstream JSON events to **Amazon API Gateway (HTTP API)**
+- API Gateway → **Lambda Ingest Function**
+- Lambda validates and stores raw events into the **S3 Raw Clickstream Bucket**
+- **EventBridge Cron** triggers ETL Lambda periodically
+- ETL Lambda:
+  - Reads raw S3 data
+  - Cleans & transforms JSON → SQL-ready rows
+  - Inserts data directly into **PostgreSQL Data Warehouse (EC2)**
 
 ---
 
-## 🏗 4. Design Justification
+### **3. Analytics & Data Warehouse Domain**
 
-### ✔ Amplify Hosting
+The system uses **two separate EC2 instances**:
 
-* Automatic CI/CD
-* CloudFront + S3 integrated
-* No server maintenance
+#### **EC2 #1 — OLTP Database**
+- PostgreSQL database for the e-commerce website
+- Stores operational data: users, orders, products, transactions
+- Located in **Private Subnet 1 (OLTP)**
 
-### ✔ Cognito Authentication
+#### **EC2 #2 — Data Warehouse + R Shiny**
+- PostgreSQL Data Warehouse
+- R Shiny Server hosting analytics dashboards
+- Located in **Private Subnet 2 (Analytics)**
 
-* Secure JWT workflow
-* Easy integration with API Gateway
-
-### ✔ Serverless Ingestion (API Gateway + Lambda)
-
-* Low cost
-* Automatically scalable
-
-### ✔ S3 Raw Layer
-
-* Durable, cheap, ideal for Data Lake
-
-### ✔ EventBridge Batch Scheduling
-
-* Flexible cron
-* Ideal for periodic ETL processing
-
-### ✔ Lambda ETL
-
-* Stateless, scalable ETL jobs
-* Converts NoSQL → SQL
-
-### ✔ VPC Endpoint + Internal ALB
-
-* Ensures secure private network communication
-* No exposure of EC2 to the internet
-
-### ✔ EC2 PostgreSQL + Shiny
-
-* Full control of Data Warehouse
-* Ideal for data analytics dashboards
+> Separation ensures analytical workloads do not impact OLTP performance.
 
 ---
 
-## 💾 5. Project Folder Structure (Recommended)
-
-```
-📦 Clickstream-Analytics
- ┣ 📂 infrastructure
- ┃ ┗ 📜 terraform
- ┣ 📂 frontend
- ┃ ┗ 📜 React/NextJS source
- ┣ 📂 lambda
- ┃ ┣ 📜 ingest.py
- ┃ ┗ 📜 etl.py
- ┣ 📂 scripts
- ┃ ┗ 📜 ec2-setup.sh
- ┣ 📂 shiny
- ┃ ┗ 📜 app.R
- ┗ 📜 README.md
-```
+# 🔐 Networking & Security Design
+- Both EC2 instances are deployed in **private subnets**
+- No public access to databases
+- Lambda runs outside the VPC
+- Private connectivity established via:
+- Lambda → VPC Interface Endpoint → Internal ALB → EC2 #2 (Data Warehouse)
+- IAM roles secure all AWS interactions
+- CloudWatch logs monitor API, Lambda, and ETL activity
 
 ---
 
-## 🚀 6. Deployment Workflow
+# 📦 S3 Buckets (2 Buckets Only)
+1. **Amplify Assets Bucket**  
+ Stores static frontend files
 
-1. Deploy Amplify Hosting
-2. Configure Cognito User Pool
-3. Create API Gateway HTTP API
-4. Deploy Lambda Ingest and ETL
-5. Create S3 Raw Layer bucket
-6. Set up EventBridge cron
-7. Create VPC Endpoint + Internal ALB
-8. Launch EC2 and install PostgreSQL + Shiny
-9. Configure ALB → EC2 routing
-10. Test ingestion → ETL → database workflow
-11. Access the Shiny dashboard
+2. **Raw Clickstream Data Bucket**  
+ Stores raw JSON clickstream events  
+ (No "processed" S3 bucket — processed data goes directly to PostgreSQL)
 
 ---
 
-## ⭐ Author
+# 🔁 Data Flow Summary
+1. User visits frontend (Amplify → CloudFront)
+2. User logs in via Cognito (JWT issued)
+3. Frontend sends clickstream events to API Gateway
+4. API Gateway → Lambda Ingest
+5. Lambda writes raw events → S3 Raw Bucket
+6. EventBridge triggers ETL Lambda
+7. ETL Lambda reads S3 raw files
+8. Transforms JSON → SQL rows
+9. Connects privately into EC2 Data Warehouse
+10. Inserts processed data into PostgreSQL DW
+11. R Shiny reads DW and renders analytics dashboard
+12. Admin accesses dashboard for insights
 
-Clickstream Analytics System
-Developed by **Trieu Quoc Hao (SBW Team)**
+---
+
+# 🧩 Key Features
+- Lightweight and scalable clickstream ingestion
+- Secure private-only analytical backend
+- R Shiny for interactive dashboards
+- Clear separation of Operational DB vs Analytics DB
+- Fully serverless ETL pipeline
+
+---
+
+# 🛠️ Tech Stack
+
+### **AWS Services**
+- AWS Amplify Hosting  
+- Amazon CloudFront  
+- Amazon Cognito  
+- Amazon S3  
+- Amazon API Gateway  
+- AWS Lambda  
+- Amazon EventBridge  
+- Amazon EC2  
+- AWS IAM  
+- Amazon CloudWatch  
+
+### **Databases**
+- PostgreSQL (OLTP – EC2 #1)  
+- PostgreSQL (Data Warehouse – EC2 #2)
+
+### **Analytics**
+- R Shiny Server  
+- Custom SQL transformation logic  
+
+---
+
+# 🚀 Deployment Notes
+- No NAT Gateway needed
+- All databases remain private (no public endpoints)
+- Lambda functions communicate to EC2 only through VPC Endpoint + ALB
+
+---
+
+# 📚 Local Development (LocalStack Notes)
+LocalStack may create additional system buckets, but the project **requires only two**:
+- S3 Assets
+- S3 Raw Clickstream
+
+Some services like Cognito, Amplify Hosting, and ALB are **partially supported** in LocalStack.
+
+---
+
+# 📈 Future Improvements
+- Replace EC2 Data Warehouse with Amazon Redshift Serverless
+- Real-time streaming pipeline using Kinesis + Lambda
+- Implement sessionization and advanced analytics models
+
+---
+
+# 🧑‍💻 Authors
+- **Quốc Hào Triệu** — Project Owner  
+- Team Members: Clickstream/ETL/Analytics Developers
+
+---
+
+
