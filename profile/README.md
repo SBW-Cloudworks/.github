@@ -62,8 +62,7 @@ The platform is engineered with:
 2. Events are POSTed as JSON to **Amazon API Gateway (HTTP API)** at:
    ```http
    POST /clickstream
-````
-
+   ```
 3. API Gateway invokes a **Lambda Ingest Function**.
 4. Lambda Ingest:
 
@@ -117,10 +116,22 @@ The analytics environment uses **two EC2 instances**, each with a dedicated role
 
 * Stores curated clickstream analytics schema:
 
-  * `sessions`
-  * `page_views`
-  * `product_interactions`
-  * `funnels`
+  * event_id
+  * event_timestamp
+  * event_name
+  * user_id
+  * user_login_state
+  * identity_source
+  * client_id
+  * session_id
+  * is_first_visit
+  * product_id
+  * product_name
+  * product_category
+  * product_brand
+  * product_price
+  * product_discount_price
+  * product_url_path
   * Aggregated metrics tables
 * Located in a **Private Subnet** (no public IP)
 * Receives data exclusively from **Lambda ETL** within the VPC
@@ -337,8 +348,5 @@ Some services such as Amplify Hosting, Cognito UI flows, and full VPC networking
 * **Quốc Hào Triệu** — Project Owner & Architect
 * Collaborators: ETL / Data Engineering / Analytics contributors
 
-```
-```
----
 
 
