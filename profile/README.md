@@ -1,7 +1,7 @@
 ![sbwCloudworks](swbCloudworksBanner.png)
 
 ## Technical Architecture Diagram
-![ClickStreamDiagramV8](ClickStreamDiagramV8.png)
+![ClickStreamDiagramV10](ClickStreamDiagramV10.png)
 # 📊 Clickstream Analytics Platform for E-Commerce  
 Batch-based ETL • AWS Serverless • Data Warehouse • R Shiny Analytics
 
@@ -30,7 +30,7 @@ The platform is engineered with:
 
 ### Frontend
 
-- Built using **Next.js + React**
+- Built using **Next.js**
 - Hosted on **AWS Amplify Hosting**
 - Amplify internally leverages:
   - **Amazon CloudFront** (global CDN)
@@ -156,32 +156,58 @@ The analytics environment uses **two EC2 instances**, each with a dedicated role
 ## VPC Layout
 
 * **VPC CIDR**: `10.0.0.0/16`
+* **Internet Gateway (IGW)**:
+  * Attached to the VPC
+  * Provides bidirectional connectivity between the VPC and the public internet
+  * Routes traffic for resources in the public subnet with public IP addresses
+
 * **Subnets**:
 
-  * **Public Subnet (OLTP)**
+  * **Public Subnet (10.0.1.0/24) - OLTP Layer**
 
-    * EC2 PostgreSQL OLTP
-    * Internet Gateway for public connectivity
-  * **Private Subnet 1 (Analytics)**
+    * EC2 PostgreSQL OLTP (with public IP)
+    * Routes internet traffic via **Internet Gateway**
+    * Allows inbound connections from external services (Amplify, admin IPs)
+    * Allows outbound internet access for updates and external API calls
 
-    * EC2 Data Warehouse (PostgreSQL)
-    * EC2 R Shiny Server
-  * **Private Subnet 2 (ETL Layer)**
+  * **Private Subnet 1 (10.0.2.0/24) - Analytics Layer**
 
-    * Lambda ETL (VPC-enabled)
-    * S3 Gateway Endpoint
+    * EC2 Data Warehouse (PostgreSQL) - no public IP
+    * EC2 R Shiny Server - no public IP
+    * No direct internet access (no route to IGW)
+    * Isolated from public internet for security
+
+  * **Private Subnet 2 (10.0.3.0/24) - ETL Layer**
+
+    * Lambda ETL (VPC-enabled) - no public IP
+    * S3 Gateway VPC Endpoint (for private S3 access)
+    * No direct internet access (no route to IGW)
 
 ## Routing
 
-* **Public Route Table**
+* **Public Route Table** (associated with Public Subnet)
 
-  * `0.0.0.0/0` → Internet Gateway
-* **Private Route Tables**
+  * `10.0.0.0/16` → Local (VPC internal routing)
+  * `0.0.0.0/0` → **Internet Gateway** (default route to the internet)
+  * Enables EC2 OLTP to:
+    * Accept inbound connections from Amplify and admin IPs
+    * Make outbound connections for software updates, external APIs, etc.
 
-  * Local VPC routes
-  * Prefix list routes for S3 via **Gateway VPC Endpoint (S3)**
+* **Private Route Table 1** (associated with Private Subnet 1 - Analytics)
 
-No NAT Gateway is used — private components reach S3 using the S3 VPC Endpoint.
+  * `10.0.0.0/16` → Local (VPC internal routing only)
+  * **No default route to Internet Gateway**
+  * No direct internet access; fully isolated
+
+* **Private Route Table 2** (associated with Private Subnet 2 - ETL)
+
+  * `10.0.0.0/16` → Local (VPC internal routing)
+  * Prefix list routes for S3 → **S3 Gateway VPC Endpoint**
+  * **No default route to Internet Gateway**
+  * S3 access via VPC endpoint (private AWS network)
+
+**Key Design Decision**: No NAT Gateway is deployed.  
+Private components (Data Warehouse, R Shiny, Lambda ETL) reach S3 exclusively through the S3 Gateway VPC Endpoint, eliminating NAT costs while maintaining security.
 
 ## Security Groups
 
@@ -210,17 +236,53 @@ No NAT Gateway is used — private components reach S3 using the S3 VPC Endpoint
   * No inbound (Lambda does not accept inbound)
   * Outbound: allowed to S3 endpoint + DW SG via private networking
 
+## External AWS Services (Outside VPC)
+
+Several AWS managed services operate outside the customer VPC and interact with VPC resources:
+
+* **AWS Amplify Hosting**
+  * Hosts the Next.js frontend application
+  * Connects to OLTP EC2 in public subnet via the Internet Gateway
+  * Uses Prisma ORM to query PostgreSQL over the public internet
+  * Secured by EC2 Security Group rules allowing specific IPs/ranges
+
+* **Amazon CloudFront**
+  * Distributes static assets globally
+  * Pulls content from Amplify's managed S3 bucket
+  * No direct VPC interaction
+
+* **Amazon Cognito**
+  * Regional service managing user authentication
+  * Accessed by frontend via AWS SDK (HTTPS)
+  * No direct VPC interaction
+
+* **Amazon API Gateway (HTTP API)**
+  * Entry point for clickstream event ingestion
+  * Invokes Lambda Ingest function (outside VPC)
+  * Lambda Ingest writes to S3 (no VPC configuration needed)
+
+* **Amazon EventBridge**
+  * Regional service triggering scheduled ETL jobs
+  * Invokes Lambda ETL (VPC-enabled in Private Subnet 2)
+  * No direct VPC interaction
+
+> **Note**: Only Lambda ETL is VPC-enabled to access the Data Warehouse in the private subnet.  
+> Lambda Ingest operates outside the VPC for simpler configuration and lower latency when writing to S3.
+
+---
+
 ## IAM & Monitoring
 
 * Dedicated IAM roles per Lambda function:
 
   * **Lambda Ingest Role**: S3 write-only (Raw bucket)
-  * **Lambda ETL Role**: S3 read + DB access permissions
+  * **Lambda ETL Role**: S3 read + DB access permissions + VPC execution role
 * **CloudWatch Logs** for:
 
   * API Gateway access logs
   * Lambda Ingest & ETL logs
   * ETL execution metrics
+  * VPC Flow Logs (optional, for network traffic analysis)
 
 ---
 
@@ -242,20 +304,45 @@ No additional “processed” bucket is required; all processed data is loaded d
 
 # 🔁 Data Flow Summary
 
-1. User accesses the web app via **CloudFront → Amplify**
-2. User authenticates via **Cognito** and interacts with the UI
-3. Frontend sends clickstream events to **API Gateway**
-4. **API Gateway → Lambda Ingest**
-5. Lambda Ingest writes event JSON files into **S3 Raw Clickstream Bucket**
-6. **EventBridge Cron** (every 30 minutes) triggers **Lambda ETL**
-7. Lambda ETL:
+## User Interaction Flow
 
-   * Reads partitioned raw files from S3
-   * Cleans and transforms JSON into SQL-ready data
-8. Lambda ETL connects to **EC2 Data Warehouse** in the private subnet
-9. ETL inserts processed rows into DW tables (sessions, events, funnels, etc.)
-10. **R Shiny** reads from DW and renders analytics dashboards
-11. Admin views dashboards (via secure/private access) for insights
+1. User accesses the web app via **CloudFront** (CDN) → **Amplify Hosting** (external to VPC)
+2. User authenticates via **Amazon Cognito** (external to VPC)
+3. User interacts with the UI; Amplify SSR/API routes query **OLTP EC2** via **Internet Gateway** using Prisma
+
+## Clickstream Ingestion Flow
+
+4. Frontend JavaScript sends clickstream events to **API Gateway** (HTTP API, external to VPC)
+5. **API Gateway** invokes **Lambda Ingest** (external to VPC)
+6. Lambda Ingest writes raw event JSON files into **S3 Raw Clickstream Bucket**
+
+## Batch ETL Processing Flow
+
+7. **EventBridge** (cron schedule, e.g., every 30 minutes) triggers **Lambda ETL**
+8. **Lambda ETL** (VPC-enabled in Private Subnet 2):
+   * Reads new raw event files from **S3 Raw Bucket** via **S3 Gateway VPC Endpoint** (private AWS network)
+   * Cleans, normalizes, and sessionizes events
+   * Converts NoSQL-style JSON into **SQL-ready analytic tables**
+   * Connects to **PostgreSQL Data Warehouse** (EC2 in Private Subnet 1) via VPC internal routing
+   * Inserts processed rows into DW tables (sessions, events, funnels, etc.)
+
+## Analytics Access Flow
+
+9. **R Shiny Server** (on same EC2 instance as DW in Private Subnet 1):
+   * Connects to DW via localhost/private IP
+   * Reads processed analytics data
+   * Renders interactive dashboards
+10. Admin accesses dashboards via secure/private access (VPN, bastion host, or AWS Systems Manager Session Manager)
+
+---
+
+## Architecture Flow Diagram Reference
+
+The numbered flow in the architecture diagram illustrates:
+- **(1)** User login via Cognito
+- **(2-5)** User browsing via CloudFront → Amplify → API Gateway → Lambda Ingest
+- **(6-8)** Amplify connecting to OLTP via Internet Gateway
+- **(9-13)** Batch ETL processing from S3 → Lambda ETL → Data Warehouse → R Shiny
 
 ---
 
@@ -340,13 +427,3 @@ Some services such as Amplify Hosting, Cognito UI flows, and full VPC networking
   * User segmentation
 * Implement data quality checks & anomaly detection for events
 * Introduce a dedicated backend API service for OLTP to remove direct DB exposure
-
----
-
-# 🧑‍💻 Authors
-
-* **Quốc Hào Triệu** — Project Owner & Architect
-* Collaborators: ETL / Data Engineering / Analytics contributors
-
-
-
