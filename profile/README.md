@@ -1,7 +1,7 @@
 ![sbwCloudworks](swbCloudworksBanner.png)
 
 ## Technical Architecture Diagram
-![ClickStreamDiagramV10](ClickStreamDiagramV10.png)
+![ClickStreamDiagramV11](ClickStreamDiagramV11.png)
 # 📊 Clickstream Analytics Platform for E-Commerce  
 Batch-based ETL • AWS Serverless • Data Warehouse • R Shiny Analytics
 
@@ -13,7 +13,7 @@ This project implements a **Batch-Based Clickstream Analytics Platform** for an 
 
 The system collects clickstream events from the frontend, stores raw JSON data in **Amazon S3**, processes events via scheduled ETL (AWS Lambda + EventBridge), and loads analytical data into a dedicated **PostgreSQL Data Warehouse** on EC2.
 
-Analytics dashboards are built using **R Shiny**, deployed in a private subnet and directly querying the Data Warehouse.
+Analytics dashboards are built using **R Shiny**, deployed in a private subnet and directly querying the Data Warehouse.![alt text](image.png)
 
 The platform is engineered with:
 
@@ -21,6 +21,7 @@ The platform is engineered with:
 - Private-only analytical backend (no public DW access)  
 - Cost-efficient, scalable AWS serverless components  
 - Minimal moving parts for reliability and simplicity  
+- Zero-SSH admin access via **AWS Systems Manager Session Manager** into the private DW
 
 ---
 
@@ -147,6 +148,12 @@ The analytics environment uses **two EC2 instances**, each with a dedicated role
   * Product engagement
   * Time-based activity trends
 
+#### Admin Access (AWS Systems Manager)
+
+* DW/Shiny EC2 runs the SSM Agent; no public IP or inbound SSH is exposed.
+* An **SSM Interface VPC Endpoint** in the analytics subnet keeps Session Manager traffic inside the VPC.
+* Admins open Session Manager port-forward/tunnel sessions to reach PostgreSQL or the Shiny UI for maintenance.
+
 > OLTP and Analytics are fully separated, ensuring reporting queries do not impact transactional performance.
 
 ---
@@ -174,6 +181,7 @@ The analytics environment uses **two EC2 instances**, each with a dedicated role
 
     * EC2 Data Warehouse (PostgreSQL) - no public IP
     * EC2 R Shiny Server - no public IP
+    * SSM Interface Endpoint for Session Manager tunnels (no bastion/SSH exposure)
     * No direct internet access (no route to IGW)
     * Isolated from public internet for security
 
@@ -223,8 +231,9 @@ Private components (Data Warehouse, R Shiny, Lambda ETL) reach S3 exclusively th
 
   * Inbound:
 
-    * `5432/tcp` – from Lambda ETL SG and Shiny SG
-  * Outbound: default (all allowed)
+    * `5432/tcp` from Lambda ETL SG and Shiny SG
+  * Outbound: default (all allowed); outbound `443/tcp` permitted to SSM interface endpoints
+  * Admin access uses Session Manager over the SSM interface endpoint (no inbound SSH)
 
 * **SG-Shiny**
 
@@ -266,7 +275,11 @@ Several AWS managed services operate outside the customer VPC and interact with 
   * Invokes Lambda ETL (VPC-enabled in Private Subnet 2)
   * No direct VPC interaction
 
-> **Note**: Only Lambda ETL is VPC-enabled to access the Data Warehouse in the private subnet.  
+* **AWS Systems Manager (Session Manager)**
+  * Regional control plane; Session Manager traffic to DW/Shiny stays private via VPC Interface Endpoints (SSM/SSMMessages/EC2Messages)
+  * Enables admin port forwarding/tunnels into the private EC2 for DW or Shiny maintenance without SSH
+
+> **Note**: Lambda ETL is VPC-enabled to access the Data Warehouse in the private subnet; Session Manager uses VPC interface endpoints for admin tunnels.  
 > Lambda Ingest operates outside the VPC for simpler configuration and lower latency when writing to S3.
 
 ---
@@ -283,6 +296,10 @@ Several AWS managed services operate outside the customer VPC and interact with 
   * Lambda Ingest & ETL logs
   * ETL execution metrics
   * VPC Flow Logs (optional, for network traffic analysis)
+* **Session Manager**:
+
+  * SSM Agent on DW/Shiny EC2 uses VPC interface endpoints
+  * Sessions can be port-forwarded to PostgreSQL/Shiny and audited via CloudWatch/S3
 
 ---
 
@@ -332,7 +349,7 @@ No additional “processed” bucket is required; all processed data is loaded d
    * Connects to DW via localhost/private IP
    * Reads processed analytics data
    * Renders interactive dashboards
-10. Admin accesses dashboards via secure/private access (VPN, bastion host, or AWS Systems Manager Session Manager)
+10. Admin opens an **AWS Systems Manager Session Manager** port-forward/tunnel through the SSM interface endpoint to reach PostgreSQL or the Shiny UI (no VPN/bastion/SSH required).
 
 ---
 
@@ -340,9 +357,10 @@ No additional “processed” bucket is required; all processed data is loaded d
 
 The numbered flow in the architecture diagram illustrates:
 - **(1)** User login via Cognito
-- **(2-5)** User browsing via CloudFront → Amplify → API Gateway → Lambda Ingest
+- **(2-5)** User browsing via CloudFront + Amplify + API Gateway + Lambda Ingest
 - **(6-8)** Amplify connecting to OLTP via Internet Gateway
-- **(9-13)** Batch ETL processing from S3 → Lambda ETL → Data Warehouse → R Shiny
+- **(9-12)** Batch ETL processing from S3 + Lambda ETL + Data Warehouse + R Shiny
+- **(13-15)** Session Manager interface endpoint and admin tunneling into the DW/Shiny EC2
 
 ---
 
@@ -355,6 +373,7 @@ The numbered flow in the architecture diagram illustrates:
   * **OLTP** (online transaction processing)
   * **Analytics / Data Warehouse**
 * R Shiny-based visual analytics, fully private
+* Zero-SSH admin access via AWS Systems Manager Session Manager (VPC Interface Endpoint + port forwarding)
 * Cost-optimized:
 
   * No NAT Gateway
@@ -379,6 +398,7 @@ The numbered flow in the architecture diagram illustrates:
 * **Amazon VPC** — Network isolation (public & private subnets)
 * **AWS IAM** — Access control
 * **Amazon CloudWatch** — Logging & monitoring
+* **AWS Systems Manager (Session Manager + VPC Interface Endpoints)** — Admin tunneling/port forwarding into private EC2
 
 ### Databases
 
@@ -396,6 +416,7 @@ The numbered flow in the architecture diagram illustrates:
 
 * **No NAT Gateway** is required (S3 access via VPC Gateway Endpoint)
 * All analytical components (DW + Shiny + ETL Lambda) sit in **private subnets**
+* Admin maintenance uses **AWS Systems Manager Session Manager** via VPC interface endpoints (SSM/SSMMessages/EC2Messages); keep the SSM Agent running and SSH closed to the internet.
 * Only the OLTP EC2 instance is public, to support direct Prisma connections from Amplify
 * For a production-hardening step, OLTP could be migrated to:
 
