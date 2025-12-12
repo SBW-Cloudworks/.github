@@ -1,5 +1,5 @@
 ![sbwCloudworks](swbCloudworksBanner.png)
-
+![SBWMember](SBWMember.png)
 ## Technical Architecture Diagram
 ![ClickStreamDiagramV11](ClickStreamDiagramV11.png)
 # 📊 Clickstream Analytics Platform for E-Commerce  
